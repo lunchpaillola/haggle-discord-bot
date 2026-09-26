@@ -15,6 +15,14 @@ Minimal Discord.js v14 bot for the Haggle resale/marketplace helper.
 
 **Sold button** (demo): anyone can mark sold; updates embed, computes 2% fee, appends ledger.
 
+## Skills
+
+Agent skills for Haggle's full resale workflow — from photo to listing to negotiation. See [`skills/`](./skills/) for the complete index.
+
+**⭐ [Sell helper](./skills/sell-helper/SKILL.md)** — the main listing interview skill: turn a photo into a ready-to-post Vinted/Depop listing with interview, photo coaching, comps research, draft copy, and browser-based publish with sign-in/2FA support.
+
+Other skills: [Getting started](./skills/getting-started/SKILL.md) • [Negotiate offers](./skills/negotiate-offers/SKILL.md) • [Fee cut](./skills/fee-cut/SKILL.md) • [Demand radar](./skills/demand-radar/SKILL.md) • [Request board](./skills/request-board/SKILL.md)
+
 ### Single marketplace channel
 
 All for-sale listings (from `/sell`, **Confirm post** after a chat draft, and the DM draft flow) go to **one** marketplace channel in the HAGGLE AI guild (`GUILD_ID`).
