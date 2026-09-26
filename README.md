@@ -17,6 +17,8 @@ Minimal Discord.js v14 bot for the Haggle resale/marketplace helper.
 
 Inside the thread, the buyer can write `£20`, `20 quid`, `I can offer £20`, or similar. The agent counters offers below the seller's private minimum; the buyer can accept that counter with `deal`, `accept`, or `sounds good`. The first qualifying agreement is accepted, the public listing changes to **DEAL AGREED**, and all competing buyer threads are notified and closed. The winning thread stays open for payment and handover arrangements. The minimum defaults to 90% of the asking price when the seller omits it.
 
+When `OPENAI_API_KEY` is configured, the bot uses the OpenAI Responses API to phrase these replies with a playful, booming barnyard-auctioneer personality and recent thread context. Application code still decides every counter and acceptance price. If the API is unavailable, the bot falls back to deterministic replies without interrupting negotiation.
+
 Negotiation state is stored in `data/negotiations.json` (ignored by Git), so restarting one bot process preserves the accepted buyer. This is a single-process demo store; use a transactional database before running multiple bot instances.
 
 ## Skills
@@ -89,6 +91,8 @@ cp .env.example .env
 # GUILD_ID=1553372098943262750   # HAGGLE AI
 # MARKETPLACE_CHANNEL_ID=...     # optional; else resolve name "marketplace"
 # WANTED_CHANNEL_ID=...          # optional
+# OPENAI_API_KEY=...              # optional; enables intelligent thread replies
+# OPENAI_MODEL=gpt-5-mini         # optional model override
 ```
 
 5. Install & register guild commands (fast for demo):

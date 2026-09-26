@@ -7,6 +7,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { acceptsCounter, defaultMinimum, evaluateOffer, parseOffer } = require('./negotiation');
+const { generateNegotiationReply } = require('./ai-negotiator');
 const {
   Client,
   GatewayIntentBits,
@@ -1097,6 +1098,41 @@ async function closeCompetingNegotiations(listing, winningBuyerId, currentThread
   saveNegotiationState();
 }
 
+function addNegotiationHistory(negotiation, role, text) {
+  negotiation.messages = negotiation.messages || [];
+  negotiation.messages.push({
+    role,
+    text: String(text || '').slice(0, 1000),
+    at: new Date().toISOString(),
+  });
+  negotiation.messages = negotiation.messages.slice(-20);
+}
+
+async function createIntelligentReply({ message, listing, negotiation, action, amount, fallback }) {
+  if (!process.env.OPENAI_API_KEY) return fallback;
+  await message.channel.sendTyping().catch(() => {});
+  try {
+    return (
+      (await generateNegotiationReply({
+        listing,
+        buyerMessage: message.content,
+        action,
+        amount,
+        history: negotiation.messages,
+      })) || fallback
+    );
+  } catch (err) {
+    console.error(`OpenAI negotiation reply failed (${err.status || err.code || 'error'}):`, err.message);
+    return fallback;
+  }
+}
+
+async function sendNegotiationReply(message, negotiation, content) {
+  addNegotiationHistory(negotiation, 'assistant', content);
+  saveNegotiationState();
+  await message.reply(content);
+}
+
 async function handleNegotiationMessage(message) {
   const threadState = negotiationState.threads[message.channelId];
   if (!threadState) return;
@@ -1109,17 +1145,6 @@ async function handleNegotiationMessage(message) {
 
   if (message.author.id !== threadState.buyerId) return;
 
-  if (listing.status === 'accepted') {
-    if (listing.acceptedBuyerId === message.author.id) {
-      await message.reply(
-        `Your offer of ${gbp(listing.acceptedPrice)} has already been accepted. Please arrange payment and handover with <@${listing.sellerId}>.`
-      );
-    } else {
-      await message.reply('Another buyer has already agreed a deal for this item. Thanks for your interest.');
-    }
-    return;
-  }
-
   const negotiation = listing.negotiations[message.author.id] || {
     buyerId: message.author.id,
     threadId: message.channelId,
@@ -1127,14 +1152,55 @@ async function handleNegotiationMessage(message) {
     createdAt: new Date().toISOString(),
   };
   listing.negotiations[message.author.id] = negotiation;
+  addNegotiationHistory(negotiation, 'buyer', message.content);
+
+  if (listing.status === 'accepted') {
+    if (listing.acceptedBuyerId === message.author.id) {
+      const fallback = `Your offer of ${gbp(listing.acceptedPrice)} has already been accepted. Please arrange payment and handover with <@${listing.sellerId}>.`;
+      const reply = await createIntelligentReply({
+        message,
+        listing,
+        negotiation,
+        action: 'winner_followup',
+        amount: listing.acceptedPrice,
+        fallback,
+      });
+      await sendNegotiationReply(message, negotiation, reply);
+    } else {
+      const fallback = 'Another buyer has already agreed a deal for this item. Thanks for your interest.';
+      const reply = await createIntelligentReply({
+        message,
+        listing,
+        negotiation,
+        action: 'closed',
+        fallback,
+      });
+      await sendNegotiationReply(message, negotiation, reply);
+    }
+    return;
+  }
 
   const offer = acceptsCounter(message.content) && negotiation.lastCounter != null
     ? negotiation.lastCounter
     : parseOffer(message.content);
   if (offer == null) {
-    await message.reply(
-      `Please send a price for your offer, for example **£${Number(listing.askingPrice).toFixed(0)}** or “I can offer £20”.`
-    );
+    const fallback = `Please send a price for your offer, for example **£${Number(listing.askingPrice).toFixed(0)}** or “I can offer £20”.`;
+    const reply = await createIntelligentReply({
+      message,
+      listing,
+      negotiation,
+      action: 'clarify',
+      fallback,
+    });
+    if (listing.status === 'accepted' && listing.acceptedBuyerId !== message.author.id) {
+      await sendNegotiationReply(
+        message,
+        negotiation,
+        'Another buyer has just agreed a deal for this item. Thanks for your interest.'
+      );
+      return;
+    }
+    await sendNegotiationReply(message, negotiation, reply);
     return;
   }
 
@@ -1150,9 +1216,24 @@ async function handleNegotiationMessage(message) {
     negotiation.status = 'countered';
     negotiation.lastCounter = decision.counter;
     saveNegotiationState();
-    await message.reply(
-      `Thanks for the offer of ${gbp(offer)}. I can do **${gbp(decision.counter)}**. Send that amount here if you want to agree the deal.`
-    );
+    const fallback = `Thanks for the offer of ${gbp(offer)}. I can do **${gbp(decision.counter)}**. Send that amount here if you want to agree the deal.`;
+    const reply = await createIntelligentReply({
+      message,
+      listing,
+      negotiation,
+      action: 'counter',
+      amount: decision.counter,
+      fallback,
+    });
+    if (listing.status === 'accepted' && listing.acceptedBuyerId !== message.author.id) {
+      await sendNegotiationReply(
+        message,
+        negotiation,
+        'Another buyer has just agreed a deal for this item. Thanks for your interest.'
+      );
+      return;
+    }
+    await sendNegotiationReply(message, negotiation, reply);
     return;
   }
 
@@ -1169,11 +1250,20 @@ async function handleNegotiationMessage(message) {
   negotiation.status = 'accepted';
   saveNegotiationState();
 
-  await message.reply(
-    `**Deal agreed at ${gbp(offer)}.** <@${listing.sellerId}> and <@${message.author.id}>, use this private thread to arrange payment and handover. Do not share payment details publicly.`
-  );
-  await updateAcceptedListing(listing);
-  await closeCompetingNegotiations(listing, message.author.id, message.channelId);
+  const fallback = `**Deal agreed at ${gbp(offer)}.** <@${listing.sellerId}> and <@${message.author.id}>, use this private thread to arrange payment and handover. Do not share payment details publicly.`;
+  const [reply] = await Promise.all([
+    createIntelligentReply({
+      message,
+      listing,
+      negotiation,
+      action: 'accept',
+      amount: offer,
+      fallback,
+    }),
+    updateAcceptedListing(listing),
+    closeCompetingNegotiations(listing, message.author.id, message.channelId),
+  ]);
+  await sendNegotiationReply(message, negotiation, reply);
 }
 
 async function handleButton(interaction) {
