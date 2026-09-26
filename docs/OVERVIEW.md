@@ -44,7 +44,7 @@ Treat tokens as secrets. Rotate if this doc leaked a live token (it should not c
 - **Wanted** posts go to `#wanted` if present, else marketplace.  
 - **Negotiate** is draft-first (`/haggle`); do not auto-DM buyers as the bot unless product expands.  
 - **Fee** is 2% of final sale price; ledger CSV; no card charging in this repo.  
-- **I'm interested button** creates a private thread under the listing for buyer-seller discussion. Prefers private threads; falls back to public if permissions are insufficient.
+- **I'm interested button** creates a private thread under the listing for buyer-seller discussion. Each buyer gets their own thread named `offer-<buyer>-<listingId>`.
 - **Mark sold** via `/mark-sold` command only. No Sold button on listings to prevent accidental or unauthorized marking.  
 - Related Grok Bot skills (separate from this repo, usually on the operator’s bot): Sell helper, Negotiate offers, Fee cut, Demand radar, Request board. Discord bot is the community marketplace wedge.
 
@@ -164,7 +164,7 @@ npm start          # keep process alive
 2. Bot asks missing: size → condition → price (`suggest` → £22 demo default).  
 3. Preview buttons: **Confirm post** | **Edit price** | **Cancel**.  
 4. Confirm → embed in **`#marketplace`**; reply with link in the trigger channel/DM.  
-5. Button on listing: **I'm interested** — creates a private thread under the listing where buyer and seller can discuss the offer, meetup, and questions. Use `/mark-sold` to record completed sales.
+5. Button on listing: **I'm interested** (creates private thread for buyer + seller to negotiate). Each buyer gets their own thread named `offer-<buyer>-<listingId>`.
 
 ### B. Wanted
 
@@ -233,7 +233,7 @@ Discord BST reality: vouch bots, ticket bots, middleman impersonation scams, Pay
 - Should not advise Friends &amp; Family for commercial goods  
 - Should verify official middlemen by User ID if you add MM features later  
 
-Before production: rate limits, logging, thread moderation tools, and clear ToS for the host server.
+Before production: rate limits, logging, and clear ToS for the host server. Mark items sold with `/mark-sold`.
 
 ---
 
@@ -246,8 +246,8 @@ Before production: rate limits, logging, thread moderation tools, and clear ToS 
 - [ ] `npm start` shows logged-in username  
 - [ ] Smoke: photo + `selling these` → Confirm → appears in `#marketplace`  
 - [ ] Smoke: `/haggle` and `/fee`  
-- [ ] Smoke: `/mark-sold` → ledger line written where expected  
-- [ ] Smoke: "I'm interested" button → creates thread under listing with buyer + seller pinged  
+- [ ] Smoke: **I'm interested** → private thread created  
+- [ ] Smoke: `/mark-sold` → ledger line written where expected
 - [ ] Update this doc if channel names, guild, or fee rate change  
 
 ---
@@ -265,6 +265,6 @@ Before production: rate limits, logging, thread moderation tools, and clear ToS 
 | Date | Change |
 |------|--------|
 | 2026-09-26 | Initial public repo: slash + chat listing, `#marketplace` routing, fee helpers, this overview |
-| 2026-09-26 | Updated marketplace UX: **I'm interested** button creates private threads under listings (fallback to public); removed **Sold** button from listings (use `/mark-sold` instead) |
+| 2026-09-26 | Updated **I'm interested** to create private threads (one per buyer). Removed **Sold** button; use `/mark-sold` instead. |
 
 When you change behavior, append a dated row here so the next agent does not rediscover footguns.
