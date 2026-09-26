@@ -7,13 +7,15 @@ Minimal Discord.js v14 bot for the Haggle resale/marketplace helper.
 | Command | Description |
 |---------|-------------|
 | `/marketplace-setup` | Posts + pins channel instructions (`#marketplace`, `#wanted`, `#deals`). Optional channel mentions. |
-| `/sell` | BST listing embed with **I'm interested** / **Sold** buttons. Always posts to the **marketplace** channel (optional `for_sale_channel` override). Replies with a link. |
+| `/sell` | BST listing embed with **I'm interested** button. Always posts to the **marketplace** channel (optional `for_sale_channel` override). Replies with a link. |
 | `/wanted` | Wanted request embed → **wanted** channel (or marketplace fallback). |
 | `/haggle` | Draft counter-offer from simple % rules. |
 | `/fee` | Preview 2% fee + seller net. |
 | `/mark-sold` | Record a sale and append to `../fee-ledger.csv`. |
 
-**Sold button** (demo): anyone can mark sold; updates embed, computes 2% fee, appends ledger.
+**I'm interested button**: creates a private thread (or public if private threads are not available) under the listing message where the buyer and seller can discuss the offer, meetup details, and any questions.
+
+**Mark sold**: use `/mark-sold` command to record a sale; computes 2% fee and appends to ledger.
 
 ### Single marketplace channel
 
@@ -42,7 +44,7 @@ Requires **Message Content Intent** (see Setup below).
 | Trigger | Behaviour |
 |---------|-----------|
 | Image attachment(s) and/or text with selling intent (`selling`, `sell`, `wts`, `for sale`, `listing`) | Starts an in-memory draft per user; bot asks for missing **size**, **condition**, **price** (or say **suggest** → £22 demo default). Caption is parsed loosely for `£22` / `22 quid`, size, condition. |
-| Guild or DM | When complete: draft preview with **Confirm post** / **Edit price** / **Cancel**. Confirm posts to **#marketplace** (not necessarily the current channel) and replies with a link. |
+| Guild or DM | When complete: draft preview with **Confirm post** / **Edit price** / **Cancel**. Confirm posts to **#marketplace** (not necessarily the current channel) and replies with a link. Posted listings include an **I'm interested** button that creates a thread for buyer-seller discussion. |
 | `wanted: …` / `looking for …` / `iso …` | Posts a wanted embed to the wanted/marketplace channel. |
 | Reply `cancel` during a draft | Clears the session. |
 

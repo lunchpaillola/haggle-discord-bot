@@ -438,11 +438,7 @@ function sellButtons(sellerId, listingId, price) {
     new ButtonBuilder()
       .setCustomId(`interested:${sellerId}:${listingId}`)
       .setLabel("I'm interested")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`sold:${sellerId}:${listingId}:${price}`)
-      .setLabel('Sold')
-      .setStyle(ButtonStyle.Success)
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
@@ -782,12 +778,12 @@ async function handleCommand(interaction) {
         {
           name: '#deals — Deals / sold',
           value:
-            'Mark items sold via the **Sold** button or `/mark-sold`. Haggle fee is **2%** of sale price.',
+            'Mark items sold via `/mark-sold`. Haggle fee is **2%** of sale price.',
         },
         {
           name: 'Tips',
           value:
-            "• DM sellers after **I'm interested**\n• Use `/haggle` for a draft counter\n• Use `/fee` to preview the 2% fee",
+            "• Click **I'm interested** to start a thread with the seller\n• Use `/haggle` for a draft counter\n• Use `/fee` to preview the 2% fee",
         }
       )
       .setFooter({ text: 'Haggle · demo' })
@@ -1047,50 +1043,53 @@ async function handleButton(interaction) {
   if (action === 'interested') {
     const sellerId = parts[1];
     const listingId = parts[2];
-    await interaction.reply({
-      content: `Nice — DM the seller <@${sellerId}> to arrange the deal. (Listing \`${listingId}\`)`,
-      ephemeral: true,
-    });
+    const buyerId = interaction.user.id;
+    const buyerTag = interaction.user.username || interaction.user.tag || buyerId.slice(-4);
+    
+    try {
+      const listingMessage = interaction.message;
+      let thread;
+      const threadName = `offer-${buyerTag}`.slice(0, 100);
+      
+      try {
+        thread = await listingMessage.startThread({
+          name: threadName,
+          autoArchiveDuration: 1440,
+          reason: `Interested buyer: ${buyerTag}`,
+        });
+      } catch (privateErr) {
+        console.log('Private thread creation failed, falling back to public thread:', privateErr.message);
+        thread = await listingMessage.startThread({
+          name: threadName,
+          autoArchiveDuration: 1440,
+          reason: `Interested buyer: ${buyerTag}`,
+        });
+      }
+      
+      const starterMessage = `Hey <@${buyerId}>! Thanks for your interest in this listing.\n\n` +
+        `<@${sellerId}>, you have an interested buyer!\n\n` +
+        `Please discuss:\n` +
+        `• Your offer amount\n` +
+        `• Meetup location and time\n` +
+        `• Any questions about the item\n\n` +
+        `Good luck with the deal!`;
+      
+      await thread.send(starterMessage);
+      
+      await interaction.reply({
+        content: `Thread created! Continue the conversation here: <#${thread.id}>`,
+        ephemeral: true,
+      });
+    } catch (err) {
+      console.error('Failed to create thread:', err);
+      await interaction.reply({
+        content: `Could not create a thread. Please DM the seller <@${sellerId}> directly to arrange the deal. (Listing \`${listingId}\`)`,
+        ephemeral: true,
+      });
+    }
     return;
   }
 
-  if (action === 'sold') {
-    // Demo: anyone can mark sold (production: require interaction.user.id === sellerId)
-    const sellerId = parts[1];
-    const listingId = parts[2];
-    const price = Number(parts[3]);
-    const title =
-      interaction.message.embeds[0]?.title?.replace(/\s*·\s*SOLD$/i, '') || listingId;
-
-    const { fee, net } = appendLedger({
-      saleId: listingId,
-      title,
-      salePrice: price,
-      notes: `sold-by:${interaction.user.id}`,
-    });
-
-    const embed = new EmbedBuilder()
-      .setColor(0x6b7280)
-      .setTitle(`${title} · SOLD`)
-      .addFields(
-        { name: 'Sale price', value: gbp(price), inline: true },
-        { name: 'Fee (2%)', value: gbp(fee), inline: true },
-        { name: 'Seller net', value: gbp(net), inline: true },
-        { name: 'Seller', value: `<@${sellerId}>`, inline: true },
-        { name: 'Marked by', value: `<@${interaction.user.id}>`, inline: true }
-      )
-      .setFooter({ text: `Listing ${listingId}` })
-      .setTimestamp();
-
-    const oldImage = interaction.message.embeds[0]?.image?.url;
-    if (oldImage) embed.setImage(oldImage);
-
-    await interaction.update({ embeds: [embed], components: [] });
-    await interaction.followUp({
-      content: `Sold! Fee ${gbp(fee)} · seller net ${gbp(net)}. Appended to fee ledger.`,
-      ephemeral: true,
-    });
-  }
 }
 
 client.login(token);
