@@ -1044,48 +1044,66 @@ async function handleButton(interaction) {
     const sellerId = parts[1];
     const listingId = parts[2];
     const buyerId = interaction.user.id;
-    const buyerTag = interaction.user.username || interaction.user.tag || buyerId.slice(-4);
+    const buyerTag = interaction.user.username || 'buyer';
+    
+    if (!interaction.channel || !interaction.message) {
+      await interaction.reply({
+        content: 'Could not create thread — message or channel missing.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const threadName = `offer-${buyerTag}-${listingId}`.slice(0, 100);
     
     try {
-      const listingMessage = interaction.message;
-      let thread;
-      const threadName = `offer-${buyerTag}`.slice(0, 100);
+      const thread = await interaction.channel.threads.create({
+        name: threadName,
+        type: ChannelType.PrivateThread,
+        invitable: false,
+        reason: `Buyer ${buyerId} interested in listing ${listingId}`,
+      });
+
+      await thread.members.add(buyerId);
       
-      try {
-        thread = await listingMessage.startThread({
-          name: threadName,
-          autoArchiveDuration: 1440,
-          reason: `Interested buyer: ${buyerTag}`,
-        });
-      } catch (privateErr) {
-        console.log('Private thread creation failed, falling back to public thread:', privateErr.message);
-        thread = await listingMessage.startThread({
-          name: threadName,
-          autoArchiveDuration: 1440,
-          reason: `Interested buyer: ${buyerTag}`,
-        });
+      if (sellerId !== client.user.id) {
+        try {
+          await thread.members.add(sellerId);
+        } catch (sellerErr) {
+          console.error(`Could not add seller ${sellerId} to thread:`, sellerErr.message);
+        }
       }
+
+      const listingUrl = interaction.message.url;
+      const starterPings = sellerId !== client.user.id 
+        ? `<@${buyerId}> <@${sellerId}>`
+        : `<@${buyerId}>`;
       
-      const starterMessage = `Hey <@${buyerId}>! Thanks for your interest in this listing.\n\n` +
-        `<@${sellerId}>, you have an interested buyer!\n\n` +
-        `Please discuss:\n` +
-        `• Your offer amount\n` +
-        `• Meetup location and time\n` +
-        `• Any questions about the item\n\n` +
-        `Good luck with the deal!`;
-      
-      await thread.send(starterMessage);
-      
+      await thread.send(
+        `${starterPings}\n\n` +
+        `**Listing:** ${listingUrl}\n\n` +
+        `<@${buyerId}>, please share:\n` +
+        `• Your offer (£)\n` +
+        `• Meetup location / notes`
+      );
+
       await interaction.reply({
-        content: `Thread created! Continue the conversation here: <#${thread.id}>`,
+        content: `Thread created: <#${thread.id}>`,
         ephemeral: true,
       });
     } catch (err) {
-      console.error('Failed to create thread:', err);
-      await interaction.reply({
-        content: `Could not create a thread. Please DM the seller <@${sellerId}> directly to arrange the deal. (Listing \`${listingId}\`)`,
-        ephemeral: true,
-      });
+      console.error('Failed to create private thread:', err);
+      if (err.code === 50013 || err.message?.includes('permissions')) {
+        await interaction.reply({
+          content: 'Could not create private thread — bot needs **Create Private Threads** permission in this channel.',
+          ephemeral: true,
+        });
+      } else {
+        await interaction.reply({
+          content: `Failed to create thread: ${err.message || 'unknown error'}`,
+          ephemeral: true,
+        });
+      }
     }
     return;
   }
