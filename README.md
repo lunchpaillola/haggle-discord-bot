@@ -7,13 +7,17 @@ Minimal Discord.js v14 bot for the Haggle resale/marketplace helper.
 | Command | Description |
 |---------|-------------|
 | `/marketplace-setup` | Posts + pins channel instructions (`#marketplace`, `#wanted`, `#deals`). Optional channel mentions. |
-| `/sell` | BST listing embed with **I'm interested** button. Always posts to the **marketplace** channel (optional `for_sale_channel` override). Replies with a link. |
+| `/sell` | BST listing embed with **I'm interested** and a private `minimum_accept_gbp`. Always posts to the **marketplace** channel (optional `for_sale_channel` override). |
 | `/wanted` | Wanted request embed → **wanted** channel (or marketplace fallback). |
 | `/haggle` | Draft counter-offer from simple % rules. |
 | `/fee` | Preview 2% fee + seller net. |
 | `/mark-sold` | Record a sale and append to `../fee-ledger.csv`. |
 
-**I'm interested button**: creates a private thread for the buyer + seller to negotiate. Each buyer gets their own thread. Thread is named `offer-<buyer>-<listingId>`. Mark items sold with `/mark-sold`.
+**I'm interested button**: creates a private thread for that buyer, the seller, and the Haggle agent. Each buyer gets a separate thread named `offer-<buyer>-<listingId>`.
+
+Inside the thread, the buyer can write `£20`, `20 quid`, `I can offer £20`, or similar. The agent counters offers below the seller's private minimum; the buyer can accept that counter with `deal`, `accept`, or `sounds good`. The first qualifying agreement is accepted, the public listing changes to **DEAL AGREED**, and all competing buyer threads are notified and closed. The winning thread stays open for payment and handover arrangements. The minimum defaults to 90% of the asking price when the seller omits it.
+
+Negotiation state is stored in `data/negotiations.json` (ignored by Git), so restarting one bot process preserves the accepted buyer. This is a single-process demo store; use a transactional database before running multiple bot instances.
 
 ## Skills
 
@@ -65,10 +69,16 @@ Slash commands keep working as before.
 3. Invite the bot (replace `CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=CLIENT_ID&permissions=2147560448&scope=bot%20applications.commands
+https://discord.com/api/oauth2/authorize?client_id=CLIENT_ID&permissions=360777378896&scope=bot%20applications.commands
 ```
 
-Suggested permissions bitmask includes: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Messages (for pin), Manage Channels (optional — auto-create `#marketplace`).
+The permissions bitmask above includes: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Messages (for pin), Manage Channels (optional auto-create), Create Private Threads, Send Messages in Threads, and Manage Threads.
+
+For private negotiation threads, also grant the bot:
+
+- Create Private Threads
+- Send Messages in Threads
+- Manage Threads (needed to add the seller and close competing threads)
 
 4. Copy env and fill values (never commit real tokens):
 
@@ -90,6 +100,36 @@ npm run register
 npm start
 ```
 
+## Test negotiation in Discord
+
+Use two Discord accounts: one seller and one buyer. Use a third account if you want to verify that competing conversations close correctly.
+
+1. Rotate any bot token that has been pasted into chat. Put only the new token in the local `.env` file.
+2. In the Developer Portal, enable **Message Content Intent**. Confirm the bot has **Create Private Threads**, **Send Messages in Threads**, and **Manage Threads** in `#marketplace`.
+3. Register the updated `/sell` command and start the bot:
+
+```bash
+npm install
+npm test
+npm run register
+npm start
+```
+
+4. As the seller, create a listing such as:
+
+```text
+/sell title:Test jacket price_gbp:30 minimum_accept_gbp:25 condition:Good size:M
+```
+
+The minimum is private and does not appear in the listing or buyer thread.
+
+5. As buyer A, press **I'm interested**, open the private thread, and send `£20`. The agent should counter at £25.
+6. As buyer B, press **I'm interested** and send `I can offer £26`. Buyer B should receive **Deal agreed at £26**.
+7. Confirm the public listing says **DEAL AGREED**, its button has disappeared, and buyer A's thread receives a closing message and is archived.
+8. Restart the bot and confirm the listing still refuses new buyers. State is retained in `data/negotiations.json`.
+
+If thread creation fails, re-check channel-level permission overrides as well as the bot role. If the bot can create threads but cannot close the losing ones, it is missing **Manage Threads**.
+
 ## Run
 
 ```bash
@@ -99,7 +139,7 @@ npm run register   # re-register slash commands to GUILD_ID
 
 ## Fee ledger
 
-Sold button and `/mark-sold` append rows to:
+`/mark-sold` appends rows to:
 
 ```
 /workspace/haggle/fee-ledger.csv
