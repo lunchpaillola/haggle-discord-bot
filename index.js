@@ -6,6 +6,7 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const { acceptsCounter, defaultMinimum, evaluateOffer, parseOffer } = require('./negotiation');
 const {
   Client,
   GatewayIntentBits,
@@ -22,6 +23,50 @@ const {
 const FEE_RATE = 0.02;
 const DEFAULT_SUGGEST_PRICE = 22;
 const LEDGER_PATH = path.resolve(__dirname, '../fee-ledger.csv');
+const NEGOTIATION_STATE_PATH = process.env.NEGOTIATION_STATE_PATH
+  ? path.resolve(process.env.NEGOTIATION_STATE_PATH)
+  : path.resolve(__dirname, 'data/negotiations.json');
+
+function loadNegotiationState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(NEGOTIATION_STATE_PATH, 'utf8'));
+    return {
+      listings: parsed.listings || {},
+      threads: parsed.threads || {},
+    };
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Could not load negotiation state:', err.message);
+    return { listings: {}, threads: {} };
+  }
+}
+
+const negotiationState = loadNegotiationState();
+
+function saveNegotiationState() {
+  fs.mkdirSync(path.dirname(NEGOTIATION_STATE_PATH), { recursive: true });
+  const temporaryPath = `${NEGOTIATION_STATE_PATH}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(negotiationState, null, 2)}\n`);
+  fs.renameSync(temporaryPath, NEGOTIATION_STATE_PATH);
+}
+
+function recordListing({ listingId, sellerId, title, askingPrice, minimumPrice, message }) {
+  const existing = negotiationState.listings[listingId] || {};
+  negotiationState.listings[listingId] = {
+    ...existing,
+    listingId,
+    sellerId,
+    title,
+    askingPrice: Number(askingPrice),
+    minimumPrice: Number(minimumPrice ?? defaultMinimum(askingPrice)),
+    status: existing.status || 'open',
+    channelId: message?.channelId || existing.channelId || null,
+    messageId: message?.id || existing.messageId || null,
+    guildId: message?.guildId || existing.guildId || null,
+    negotiations: existing.negotiations || {},
+  };
+  saveNegotiationState();
+  return negotiationState.listings[listingId];
+}
 
 /** @type {Map<string, object>} in-memory draft sessions keyed by userId */
 const draftSessions = new Map();
@@ -433,7 +478,7 @@ function buildSellEmbed({ title, price, size, condition, notes, sellerId, listin
   return embed;
 }
 
-function sellButtons(sellerId, listingId, price) {
+function sellButtons(sellerId, listingId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`interested:${sellerId}:${listingId}`)
@@ -511,6 +556,7 @@ async function postListingFromSession(channel, session, sellerId) {
   const listingId = `d${Date.now()}`;
   const title = session.title || 'Item for sale';
   const price = session.price ?? DEFAULT_SUGGEST_PRICE;
+  const minimumPrice = session.minimumPrice ?? defaultMinimum(price);
   const embed = buildSellEmbed({
     title,
     price,
@@ -521,8 +567,16 @@ async function postListingFromSession(channel, session, sellerId) {
     listingId,
     imageUrl: session.imageUrl,
   });
-  const row = sellButtons(sellerId, listingId, price);
+  const row = sellButtons(sellerId, listingId);
   const message = await channel.send({ embeds: [embed], components: [row] });
+  recordListing({
+    listingId,
+    sellerId,
+    title,
+    askingPrice: price,
+    minimumPrice,
+    message,
+  });
   return { listingId, message };
 }
 
@@ -704,6 +758,11 @@ client.on('messageCreate', async (message) => {
   try {
     if (message.author.bot) return;
 
+    if (negotiationState.threads[message.channelId]) {
+      await handleNegotiationMessage(message);
+      return;
+    }
+
     const text = (message.content || '').trim();
     const images = imageAttachments(message);
     const userId = message.author.id;
@@ -805,6 +864,8 @@ async function handleCommand(interaction) {
   if (commandName === 'sell') {
     const title = interaction.options.getString('title', true);
     const price = interaction.options.getNumber('price_gbp', true);
+    const requestedMinimum = interaction.options.getNumber('minimum_accept_gbp');
+    const minimumPrice = requestedMinimum ?? defaultMinimum(price);
     const size = interaction.options.getString('size');
     const condition = interaction.options.getString('condition');
     const notes = interaction.options.getString('notes');
@@ -812,6 +873,14 @@ async function handleCommand(interaction) {
     const targetCh = interaction.options.getChannel('for_sale_channel');
     const sellerId = interaction.user.id;
     const listingId = `d${Date.now()}`;
+
+    if (price <= 0 || minimumPrice < 0 || minimumPrice > price) {
+      await interaction.reply({
+        content: 'Price must be greater than £0, and the private minimum must be between £0 and the asking price.',
+        ephemeral: true,
+      });
+      return;
+    }
 
     const embed = buildSellEmbed({
       title,
@@ -822,7 +891,7 @@ async function handleCommand(interaction) {
       sellerId,
       listingId,
     });
-    const row = sellButtons(sellerId, listingId, price);
+    const row = sellButtons(sellerId, listingId);
 
     let channel = targetCh;
     let created = false;
@@ -848,6 +917,14 @@ async function handleCommand(interaction) {
     }
 
     const posted = await channel.send({ embeds: [embed], components: [row] });
+    recordListing({
+      listingId,
+      sellerId,
+      title,
+      askingPrice: price,
+      minimumPrice,
+      message: posted,
+    });
     const createdNote = created ? ' (created #marketplace)' : '';
     await interaction.reply({
       content: `Listing posted in <#${channel.id}>${createdNote}: ${posted.url}`,
@@ -977,6 +1054,128 @@ async function handleCommand(interaction) {
   }
 }
 
+async function fetchGuildChannel(guild, channelId) {
+  if (!guild || !channelId) return null;
+  return guild.channels.cache.get(channelId) || guild.channels.fetch(channelId).catch(() => null);
+}
+
+async function updateAcceptedListing(listing) {
+  const guild = await resolveGuild(listing.guildId);
+  const channel = await fetchGuildChannel(guild, listing.channelId);
+  if (!channel?.messages || !listing.messageId) return;
+
+  const listingMessage = await channel.messages.fetch(listing.messageId).catch(() => null);
+  if (!listingMessage?.embeds?.[0]) return;
+
+  const embed = EmbedBuilder.from(listingMessage.embeds[0])
+    .setColor(0xf59e0b)
+    .setTitle(`${listing.title} · DEAL AGREED`)
+    .addFields({
+      name: 'Status',
+      value: `Offer accepted at ${gbp(listing.acceptedPrice)}. Pending handover.`,
+    });
+  await listingMessage.edit({ embeds: [embed], components: [] }).catch((err) => {
+    console.error(`Could not update listing ${listing.listingId}:`, err.message);
+  });
+}
+
+async function closeCompetingNegotiations(listing, winningBuyerId, currentThreadId) {
+  const guild = await resolveGuild(listing.guildId);
+  const negotiations = Object.values(listing.negotiations || {});
+
+  for (const negotiation of negotiations) {
+    if (negotiation.buyerId === winningBuyerId || negotiation.threadId === currentThreadId) continue;
+    negotiation.status = 'closed_other_buyer_accepted';
+    const thread = await fetchGuildChannel(guild, negotiation.threadId);
+    if (!thread) continue;
+    await thread.send(
+      'Thanks for your interest. Another buyer has now agreed a deal for this item, so this negotiation is closed.'
+    ).catch(() => {});
+    await thread.setLocked(true, 'Another buyer was accepted').catch(() => {});
+    await thread.setArchived(true, 'Another buyer was accepted').catch(() => {});
+  }
+  saveNegotiationState();
+}
+
+async function handleNegotiationMessage(message) {
+  const threadState = negotiationState.threads[message.channelId];
+  if (!threadState) return;
+
+  const listing = negotiationState.listings[threadState.listingId];
+  if (!listing) {
+    await message.reply('I can no longer find this listing. Please ask the seller to create it again.');
+    return;
+  }
+
+  if (message.author.id !== threadState.buyerId) return;
+
+  if (listing.status === 'accepted') {
+    if (listing.acceptedBuyerId === message.author.id) {
+      await message.reply(
+        `Your offer of ${gbp(listing.acceptedPrice)} has already been accepted. Please arrange payment and handover with <@${listing.sellerId}>.`
+      );
+    } else {
+      await message.reply('Another buyer has already agreed a deal for this item. Thanks for your interest.');
+    }
+    return;
+  }
+
+  const negotiation = listing.negotiations[message.author.id] || {
+    buyerId: message.author.id,
+    threadId: message.channelId,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  };
+  listing.negotiations[message.author.id] = negotiation;
+
+  const offer = acceptsCounter(message.content) && negotiation.lastCounter != null
+    ? negotiation.lastCounter
+    : parseOffer(message.content);
+  if (offer == null) {
+    await message.reply(
+      `Please send a price for your offer, for example **£${Number(listing.askingPrice).toFixed(0)}** or “I can offer £20”.`
+    );
+    return;
+  }
+
+  negotiation.lastOffer = offer;
+  negotiation.updatedAt = new Date().toISOString();
+  const decision = evaluateOffer({
+    askingPrice: listing.askingPrice,
+    minimumPrice: listing.minimumPrice,
+    offer,
+  });
+
+  if (decision.outcome === 'counter') {
+    negotiation.status = 'countered';
+    negotiation.lastCounter = decision.counter;
+    saveNegotiationState();
+    await message.reply(
+      `Thanks for the offer of ${gbp(offer)}. I can do **${gbp(decision.counter)}**. Send that amount here if you want to agree the deal.`
+    );
+    return;
+  }
+
+  // This assignment happens before any await, so only the first qualifying message
+  // handled by this process can move the listing from open to accepted.
+  if (listing.status !== 'open') {
+    await message.reply('Another buyer has just agreed a deal for this item. Thanks for your interest.');
+    return;
+  }
+  listing.status = 'accepted';
+  listing.acceptedBuyerId = message.author.id;
+  listing.acceptedPrice = offer;
+  listing.acceptedAt = new Date().toISOString();
+  negotiation.status = 'accepted';
+  saveNegotiationState();
+
+  await message.reply(
+    `**Deal agreed at ${gbp(offer)}.** <@${listing.sellerId}> and <@${message.author.id}>, use this private thread to arrange payment and handover. Do not share payment details publicly.`
+  );
+  await updateAcceptedListing(listing);
+  await closeCompetingNegotiations(listing, message.author.id, message.channelId);
+}
+
 async function handleButton(interaction) {
   const parts = interaction.customId.split(':');
   const action = parts[0];
@@ -1045,7 +1244,15 @@ async function handleButton(interaction) {
     const listingId = parts[2];
     const buyerId = interaction.user.id;
     const buyerTag = interaction.user.username || 'buyer';
-    
+
+    if (buyerId === sellerId) {
+      await interaction.reply({
+        content: 'You are the seller for this listing. Ask another account to test the buyer flow.',
+        ephemeral: true,
+      });
+      return;
+    }
+
     if (!interaction.channel || !interaction.message) {
       await interaction.reply({
         content: 'Could not create thread — message or channel missing.',
@@ -1054,8 +1261,55 @@ async function handleButton(interaction) {
       return;
     }
 
+    const priceField = interaction.message.embeds[0]?.fields?.find((field) => field.name === 'Price');
+    const parsedEmbedPrice = Number(String(priceField?.value || '').replace(/[^\d.]/g, ''));
+    const existingListing = negotiationState.listings[listingId];
+    const askingPrice = existingListing?.askingPrice ?? parsedEmbedPrice;
+    const minimumPrice = existingListing?.minimumPrice ?? defaultMinimum(askingPrice);
+    const title = interaction.message.embeds[0]?.title || 'Item for sale';
+    const listing = recordListing({
+      listingId,
+      sellerId,
+      title,
+      askingPrice,
+      minimumPrice,
+      message: interaction.message,
+    });
+
+    if (listing.status === 'accepted') {
+      await interaction.reply({
+        content: 'A deal has already been agreed for this item.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const existingNegotiation = listing.negotiations?.[buyerId];
+    if (existingNegotiation?.threadId) {
+      await interaction.reply({
+        content: `You already have a negotiation thread: <#${existingNegotiation.threadId}>`,
+        ephemeral: true,
+      });
+      return;
+    }
+    if (existingNegotiation?.status === 'creating') {
+      await interaction.reply({
+        content: 'Your negotiation thread is already being created. Please wait a moment.',
+        ephemeral: true,
+      });
+      return;
+    }
+
     const threadName = `offer-${buyerTag}-${listingId}`.slice(0, 100);
-    
+    listing.negotiations[buyerId] = {
+      buyerId,
+      threadId: null,
+      status: 'creating',
+      createdAt: new Date().toISOString(),
+    };
+    saveNegotiationState();
+    await interaction.deferReply({ ephemeral: true });
+
     try {
       const thread = await interaction.channel.threads.create({
         name: threadName,
@@ -1064,8 +1318,17 @@ async function handleButton(interaction) {
         reason: `Buyer ${buyerId} interested in listing ${listingId}`,
       });
 
+      if (listing.status !== 'open') {
+        delete listing.negotiations[buyerId];
+        saveNegotiationState();
+        await thread.setLocked(true, 'A buyer was accepted while this thread was opening').catch(() => {});
+        await thread.setArchived(true, 'A buyer was accepted while this thread was opening').catch(() => {});
+        await interaction.editReply('Another buyer has just agreed a deal for this item.');
+        return;
+      }
+
       await thread.members.add(buyerId);
-      
+
       if (sellerId !== client.user.id) {
         try {
           await thread.members.add(sellerId);
@@ -1074,34 +1337,42 @@ async function handleButton(interaction) {
         }
       }
 
+      listing.negotiations[buyerId] = {
+        buyerId,
+        threadId: thread.id,
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      };
+      negotiationState.threads[thread.id] = { listingId, buyerId };
+      saveNegotiationState();
+
       const listingUrl = interaction.message.url;
-      const starterPings = sellerId !== client.user.id 
+      const starterPings = sellerId !== client.user.id
         ? `<@${buyerId}> <@${sellerId}>`
         : `<@${buyerId}>`;
-      
+
       await thread.send(
         `${starterPings}\n\n` +
         `**Listing:** ${listingUrl}\n\n` +
-        `<@${buyerId}>, please share:\n` +
-        `• Your offer (£)\n` +
-        `• Meetup location / notes`
+        `I’m the Haggle agent for this listing. Send your offer in pounds (for example, **£20**). ` +
+        `I’ll accept it if it meets the seller’s private minimum, or make a counter-offer.\n\n` +
+        `Once a deal is agreed, this item will close to every other buyer.`
       );
 
-      await interaction.reply({
+      await interaction.editReply({
         content: `Thread created: <#${thread.id}>`,
-        ephemeral: true,
       });
     } catch (err) {
+      delete listing.negotiations[buyerId];
+      saveNegotiationState();
       console.error('Failed to create private thread:', err);
       if (err.code === 50013 || err.message?.includes('permissions')) {
-        await interaction.reply({
+        await interaction.editReply({
           content: 'Could not create private thread — bot needs **Create Private Threads** permission in this channel.',
-          ephemeral: true,
         });
       } else {
-        await interaction.reply({
+        await interaction.editReply({
           content: `Failed to create thread: ${err.message || 'unknown error'}`,
-          ephemeral: true,
         });
       }
     }

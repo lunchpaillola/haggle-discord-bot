@@ -43,6 +43,12 @@ const commands = [
     .addNumberOption((o) =>
       o.setName('price_gbp').setDescription('Asking price in GBP').setRequired(true)
     )
+    .addNumberOption((o) =>
+      o
+        .setName('minimum_accept_gbp')
+        .setDescription('Private minimum the agent may accept (default: 90% of ask)')
+        .setRequired(false)
+    )
     .addStringOption((o) =>
       o.setName('size').setDescription('Size').setRequired(false)
     )

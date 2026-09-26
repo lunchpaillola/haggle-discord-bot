@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "register": "node register-commands.js"
+    "register": "node register-commands.js",
+    "test": "node --test"
   },
   "keywords": ["discord", "haggle", "marketplace", "resale"],
   "author": "Haggle",
