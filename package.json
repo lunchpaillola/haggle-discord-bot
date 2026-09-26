@@ -1,0 +1,20 @@
+{
+  "name": "haggle-discord-bot",
+  "version": "1.0.0",
+  "description": "Haggle resale/marketplace helper Discord bot (demo)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "register": "node register-commands.js"
+  },
+  "keywords": ["discord", "haggle", "marketplace", "resale"],
+  "author": "Haggle",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
